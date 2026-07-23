@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(express.static(path.join(__dirname, path.join(__dirname, '..', 'frontend'))));
 app.post('/api/login', async (req, res) => {
   try {
     const r = await axios.post('https://saladofuturo.educacao.sp.gov.br/api/login', req.body);
@@ -14,3 +14,4 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Erro' }); }
 });
 app.listen(process.env.PORT || 3000);
+
