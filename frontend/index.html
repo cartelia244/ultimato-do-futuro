@@ -526,7 +526,7 @@
       return h;
     }
 
-    async function api(endpoint, body) {
+    async function api(endpoint, body) { console.log("API CALL:", endpoint, body);
       if (endpoint === '/api/login') {
         const resp = await fetch('/api/login', {
           method: 'POST',
@@ -1062,3 +1062,4 @@
   </script>
 </body>
 </html>
+
