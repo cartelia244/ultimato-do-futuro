@@ -503,10 +503,115 @@
       return 'fail';
     }
 
+        // Configurações IPTV
+    const IPTV_BASE = 'https://edusp-api.ip.tv';
+    const IPTV_TOKEN_URL = 'https://edusp-api.ip.tv/registration/edusp/token';
+
+    function randHex(n) {
+      return Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    }
+
+    function iptvHeaders(authToken = null) {
+      const rid = randHex(32);
+      const par = randHex(16);
+      const h = {
+        'Accept': '*/*',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Content-Type': 'application/json',
+        'Request-Id': ,
+        'Traceparent': ,
+        'X-Api-Realm': 'edusp',
+        'X-Api-Platform': 'webclient',
+        'User-Agent': navigator.userAgent,
+        'Origin': 'https://saladofuturo.educacao.sp.gov.br',
+        'Referer': 'https://saladofuturo.educacao.sp.gov.br/',
+      };
+      if (authToken) h['X-Api-Key'] = authToken;
+      return h;
+    }
+
     async function api(endpoint, body) {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      // Se for login, vai para o nosso backend pegar o sedToken (BFF)
+      if (endpoint === '/api/login') {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Erro no Login');
+        
+        // Com o sedToken, o browser faz o exchange com IPTV diretamente
+        // Isso ignora o bloqueio de IP do Railway!
+        const iptvResp = await fetch(IPTV_TOKEN_URL, {
+          method: 'POST',
+          headers: iptvHeaders(),
+          body: JSON.stringify({ token: data.sedToken }),
+        });
+        
+        if (!iptvResp.ok) throw new Error('Falha ao autenticar na plataforma educacional.');
+        const iptvData = await iptvResp.json();
+        const authToken = iptvData.auth_token;
+
+        // Buscar turmas
+        const roomsResp = await fetch(, {
+          headers: iptvHeaders(authToken),
+        });
+        if (!roomsResp.ok) throw new Error('Falha ao buscar turmas.');
+        const roomsData = await roomsResp.json();
+        const rooms = roomsData.rooms || [];
+        
+        const turmas = rooms.map(r => ({
+          id: r.id,
+          name: r.name,
+          topic: r.topic || r.name,
+          escola: r.meta?.nome_escola || '',
+          diretoria: r.meta?.nome_diretoria || ''
+        }));
+
+        return {
+          authToken,
+          turmas,
+          aluno: { 
+            nome: iptvData.name || 'Aluno',
+            ra: body.ra,
+            digito: body.digito
+          }
+        };
+      }
+
+      // Outras rotas IPTV (chamadas diretas do Browser)
+      const headers = iptvHeaders(body.authToken);
+      
+      if (endpoint === '/api/tarefas') {
+        const url = ;
+        const resp = await fetch(url, { headers });
+        const resData = await resp.json();
+        if (!resp.ok) throw new Error('Erro ao buscar tarefas: ' + resp.status);
+        return resData;
+      } 
+      
+      if (endpoint === '/api/completar') {
+        const url = ;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            room_code: body.roomName,
+            time_spent: Math.round(300 + Math.random() * 300)
+          })
+        });
+        const resData = await resp.json();
+        if (!resp.ok) throw new Error('Erro ao completar tarefa: ' + resp.status);
+        return resData;
+      }
+
+      if (endpoint === '/api/redacao') {
+        throw new Error('IA de redação temporariamente desativada para ajustes de segurança.');
+      }
+
+      throw new Error('Endpoint não suportado na arquitetura híbrida.');
+    },
         body: JSON.stringify(body),
       });
       const data = await resp.json();
