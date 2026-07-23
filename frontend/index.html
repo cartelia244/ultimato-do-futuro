@@ -503,7 +503,7 @@
       return 'fail';
     }
 
-        // Configurações IPTV
+            // Configurações IPTV
     const IPTV_BASE = 'https://edusp-api.ip.tv';
     const IPTV_TOKEN_URL = 'https://edusp-api.ip.tv/registration/edusp/token';
 
@@ -542,7 +542,6 @@
         if (!resp.ok) throw new Error(data.error || 'Erro no Login');
         
         // Com o sedToken, o browser faz o exchange com IPTV diretamente
-        // Isso ignora o bloqueio de IP do Railway!
         const iptvResp = await fetch(IPTV_TOKEN_URL, {
           method: 'POST',
           headers: iptvHeaders(),
@@ -569,9 +568,14 @@
           diretoria: r.meta?.nome_diretoria || ''
         }));
 
+        // Selecionar turma padrão (mesma lógica que tinha no server.js)
+        const comGrau = turmas.filter(t => t.topic && /[º°ª]/.test(t.topic));
+        const defaultTurmaId = comGrau.length ? comGrau[0].id : (turmas.length ? turmas[0].id : null);
+
         return {
           authToken,
           turmas,
+          defaultTurmaId,
           aluno: { 
             nome: iptvData.name || 'Aluno',
             ra: body.ra,
@@ -581,14 +585,14 @@
       }
 
       // Outras rotas IPTV (chamadas diretas do Browser)
-      const headers = iptvHeaders(body.authToken);
+      const headers = iptvHeaders(body.authToken || state.authToken);
       
       if (endpoint === '/api/tarefas') {
         const url = ;
         const resp = await fetch(url, { headers });
         const resData = await resp.json();
         if (!resp.ok) throw new Error('Erro ao buscar tarefas: ' + resp.status);
-        return resData;
+        return resData; // Note: original code expected data.tasks
       } 
       
       if (endpoint === '/api/completar') {
@@ -606,11 +610,7 @@
         return resData;
       }
 
-      if (endpoint === '/api/redacao') {
-        throw new Error('IA de redação temporariamente desativada para ajustes de segurança.');
-      }
-
-      throw new Error('Endpoint não suportado na arquitetura híbrida.');
+      throw new Error('Endpoint não suportado.');
     },
         body: JSON.stringify(body),
       });
