@@ -6,6 +6,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
 app.use(express.static(__dirname));
+
+// Rota de Healthcheck para o Railway não matar o processo
+app.get('/health', (req, res) => res.send('OK'));
+
 app.post('/api/login', async (req, res) => {
   try {
     const r = await axios.post('https://saladofuturo.educacao.sp.gov.br/api/login', req.body);
