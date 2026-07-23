@@ -282,7 +282,7 @@
         <div id="login-error"></div>
         <div class="form-row">
           <label>RA do Aluno</label>
-          <input id="inp-ra" type="text" inputmode="numeric" placeholder="Digite seu RA" maxlength="12" />
+          <input id="inp-ra" type="text" inputmode="numeric" placeholder="Ex: 000116508291" maxlength="12" />
         </div>
         <div class="form-row row2">
           <div>
@@ -503,8 +503,8 @@
       return 'fail';
     }
 
-            
-    // Configurações IPTV
+    
+    // Configurações IPTV (Arquitetura Híbrida Zapia)
     const IPTV_BASE = 'https://edusp-api.ip.tv';
     const IPTV_TOKEN_URL = 'https://edusp-api.ip.tv/registration/edusp/token';
 
@@ -588,6 +588,7 @@
         const resp = await fetch(url, { headers });
         const resData = await resp.json();
         if (!resp.ok) throw new Error('Erro ao buscar tarefas: ' + resp.status);
+        // O frontend original espera data.tasks
         return resData;
       } 
       
