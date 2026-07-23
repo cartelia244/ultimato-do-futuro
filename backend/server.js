@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
-import Groq from 'groq-sdk';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -36,7 +35,9 @@ function iptvHeaders(authToken = null) {
     'Traceparent': `00-${rid}-${par}-01`,
     'X-Api-Realm': 'edusp',
     'X-Api-Platform': 'webclient',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Origin': 'https://saladofuturo.educacao.sp.gov.br',
+    'Referer': 'https://saladofuturo.educacao.sp.gov.br/',
   };
   if (authToken) h['X-Api-Key'] = authToken;
   return h;
@@ -47,9 +48,22 @@ async function sleep(ms) {
 }
 
 function formatUserKey(ra, digito) {
-  // RA sempre 12 dígitos com zeros a esquerda
   const raPad = ra.toString().replace(/\D/g, '').padStart(12, '0');
   return `${raPad}${digito}SP`;
+}
+
+// Retry com backoff exponencial
+async function fetchWithRetry(url, options, retries = 3, delay = 800) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const resp = await fetch(url, { ...options, timeout: 20000 });
+      return resp;
+    } catch (err) {
+      console.error(`[fetchWithRetry] tentativa ${i + 1}/${retries} falhou: ${err.message}`);
+      if (i < retries - 1) await sleep(delay * (i + 1));
+      else throw err;
+    }
+  }
 }
 
 // ─── ROTA: LOGIN ──────────────────────────────────────────────────────────────
@@ -62,51 +76,85 @@ app.post('/api/login', async (req, res) => {
     }
 
     const userKey = formatUserKey(ra, digito);
+    console.log(`[login] userKey=${userKey}`);
 
     // Step 1: BFF Login
-    const bffResp = await fetch(BFF_LOGIN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ocp-apim-subscription-key': BFF_KEY,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://saladofuturo.educacao.sp.gov.br',
-        'Referer': 'https://saladofuturo.educacao.sp.gov.br/',
-      },
-      body: JSON.stringify({ user: userKey, senha, tipo: 'ALUNO' }),
-    });
+    let bffResp;
+    try {
+      bffResp = await fetchWithRetry(BFF_LOGIN_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ocp-apim-subscription-key': BFF_KEY,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Origin': 'https://saladofuturo.educacao.sp.gov.br',
+          'Referer': 'https://saladofuturo.educacao.sp.gov.br/',
+        },
+        body: JSON.stringify({ user: userKey, senha, tipo: 'ALUNO' }),
+      });
+    } catch (err) {
+      console.error('[login] BFF request failed:', err.message);
+      return res.status(502).json({ error: 'Não foi possível conectar com o servidor da Sala do Futuro. Tente novamente.' });
+    }
 
     if (!bffResp.ok) {
       const errText = await bffResp.text();
+      console.error(`[login] BFF error ${bffResp.status}: ${errText.slice(0, 200)}`);
       const msg = errText.toLowerCase().includes('incorretos') || errText.toLowerCase().includes('invalid')
         ? 'RA, dígito ou senha incorretos.'
-        : 'Erro ao conectar com a Sala do Futuro.';
+        : `Erro ao autenticar (${bffResp.status}). Verifique seus dados.`;
       return res.status(401).json({ error: msg });
     }
 
     const bffData = await bffResp.json();
     const sedToken = bffData.token;
+    if (!sedToken) {
+      console.error('[login] BFF retornou sem token:', JSON.stringify(bffData).slice(0, 200));
+      return res.status(401).json({ error: 'RA, dígito ou senha incorretos.' });
+    }
+    console.log(`[login] BFF OK, token=${sedToken.length} chars`);
 
     // Step 2: Trocar por auth_token IPTV
-    const iptvResp = await fetch(IPTV_TOKEN_URL, {
-      method: 'POST',
-      headers: iptvHeaders(),
-      body: JSON.stringify({ token: sedToken }),
-    });
+    let iptvResp;
+    try {
+      iptvResp = await fetchWithRetry(IPTV_TOKEN_URL, {
+        method: 'POST',
+        headers: iptvHeaders(),
+        body: JSON.stringify({ token: sedToken }),
+      });
+    } catch (err) {
+      console.error('[login] IPTV token request failed:', err.message);
+      return res.status(502).json({ error: 'Falha ao conectar com a plataforma educacional. Tente novamente.' });
+    }
 
     if (!iptvResp.ok) {
-      return res.status(500).json({ error: 'Falha ao autenticar na plataforma.' });
+      const errText = await iptvResp.text();
+      console.error(`[login] IPTV error ${iptvResp.status}: ${errText.slice(0, 200)}`);
+      return res.status(500).json({ error: `Falha ao autenticar na plataforma (${iptvResp.status}). Tente novamente.` });
     }
 
     const iptvData = await iptvResp.json();
     const authToken = iptvData.auth_token;
+    if (!authToken) {
+      console.error('[login] IPTV sem auth_token:', JSON.stringify(iptvData).slice(0, 200));
+      return res.status(500).json({ error: 'Falha ao obter token da plataforma. Tente novamente.' });
+    }
+    console.log(`[login] IPTV OK, auth_token obtido`);
 
     // Step 3: Buscar turmas
-    const roomsResp = await fetch(`${IPTV_BASE}/room/user`, {
-      headers: iptvHeaders(authToken),
-    });
+    let roomsResp;
+    try {
+      roomsResp = await fetchWithRetry(`${IPTV_BASE}/room/user`, {
+        headers: iptvHeaders(authToken),
+      });
+    } catch (err) {
+      console.error('[login] rooms request failed:', err.message);
+      return res.status(502).json({ error: 'Falha ao buscar turmas. Tente novamente.' });
+    }
 
     if (!roomsResp.ok) {
+      const errText = await roomsResp.text();
+      console.error(`[login] rooms error ${roomsResp.status}: ${errText.slice(0, 200)}`);
       return res.status(500).json({ error: 'Falha ao buscar turmas.' });
     }
 
@@ -117,7 +165,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(404).json({ error: 'Nenhuma turma encontrada para este aluno.' });
     }
 
-    // Formatar turmas para o frontend
     const turmas = rooms.map(r => ({
       id: r.id,
       name: r.name,
@@ -126,12 +173,11 @@ app.post('/api/login', async (req, res) => {
       diretoria: r.meta?.nome_diretoria || '',
     }));
 
-    // Selecionar turma padrão (a com símbolo de grau no topic, com mais 'oper')
     const comGrau = turmas.filter(t => t.topic && /[º°ª]/.test(t.topic));
     const defaultTurma = comGrau.length ? comGrau[0] : turmas[0];
+    const alunoNome = iptvData.name || bffData.DadosUsuario?.NAME || 'Aluno';
 
-    // Dados do aluno
-    const alunoNome = iptvData.name || bffData.name || 'Aluno';
+    console.log(`[login] sucesso: ${alunoNome}, ${turmas.length} turma(s)`);
 
     return res.json({
       authToken,
@@ -156,13 +202,11 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/tarefas', async (req, res) => {
   try {
     const { authToken, roomId, roomName, tipo } = req.body;
-    // tipo: 'pendentes' | 'expiradas' | 'todas'
     if (!authToken || !roomId || !roomName) {
       return res.status(400).json({ error: 'Dados incompletos.' });
     }
 
-    // Buscar detalhes da sala para pegar publication_targets
-    const detailResp = await fetch(
+    const detailResp = await fetchWithRetry(
       `${IPTV_BASE}/room/detail/${roomId}?fields[]=id&fields[]=name&with_category_groups=true`,
       { headers: iptvHeaders(authToken) }
     );
@@ -181,7 +225,7 @@ app.post('/api/tarefas', async (req, res) => {
       });
       url += '&answer_statuses=draft&answer_statuses=pending&with_apply_moment=true';
 
-      const r = await fetch(url, { headers: iptvHeaders(authToken) });
+      const r = await fetchWithRetry(url, { headers: iptvHeaders(authToken) });
       if (!r.ok) return [];
       const data = await r.json();
       return Array.isArray(data) ? data : (data.tasks || data.items || []);
@@ -192,7 +236,6 @@ app.post('/api/tarefas', async (req, res) => {
       tasks = await fetchForTipo(true);
     } else if (tipo === 'todas') {
       const [pendentes, expiradas] = await Promise.all([fetchForTipo(false), fetchForTipo(true)]);
-      // Deduplicar por id
       const seen = new Set();
       tasks = [...pendentes, ...expiradas].filter(t => {
         if (seen.has(t.id)) return false;
@@ -200,7 +243,6 @@ app.post('/api/tarefas', async (req, res) => {
         return true;
       });
     } else {
-      // pendentes (default)
       tasks = await fetchForTipo(false);
     }
 
@@ -233,8 +275,7 @@ app.post('/api/completar', async (req, res) => {
   }
 
   try {
-    // Buscar info da lição
-    const infoResp = await fetch(
+    const infoResp = await fetchWithRetry(
       `${IPTV_BASE}/tms/task/${lessonId}/apply/?preview_mode=false&room_code=${roomName}`,
       { headers: iptvHeaders(authToken) }
     );
@@ -252,13 +293,9 @@ app.post('/api/completar', async (req, res) => {
       return res.json({ status: 'skipped', reason: 'prova' });
     }
 
-    // Gerar respostas via IA ou padrão
-    const answers = await generateAnswers(lessonInfo, useAI);
-
-    // Calcular tempo gasto (entre 1 e 3 min por tarefa, variável)
+    const answers = await generateAnswers(lessonInfo, useAI && !!GROQ_API_KEY);
     const timeSpent = Math.round((60 + Math.random() * 120));
 
-    // Submeter
     const submitResult = await submitTask({
       authToken,
       roomName,
@@ -287,8 +324,12 @@ app.post('/api/redacao', async (req, res) => {
     return res.status(400).json({ error: 'Dados incompletos.' });
   }
 
+  if (!GROQ_API_KEY) {
+    return res.status(503).json({ error: 'Geração de redação não disponível (sem chave de IA configurada).' });
+  }
+
   try {
-    const infoResp = await fetch(
+    const infoResp = await fetchWithRetry(
       `${IPTV_BASE}/tms/task/${lessonId}/apply/?preview_mode=false&room_code=${roomName}`,
       { headers: iptvHeaders(authToken) }
     );
@@ -298,14 +339,9 @@ app.post('/api/redacao', async (req, res) => {
     }
 
     const lessonInfo = await infoResp.json();
-
-    // Extrair tema da redação
     const temaReal = tema || lessonInfo.title || lessonInfo.description || 'Tema livre';
-
-    // Gerar redação com Groq
     const texto = await gerarRedacao(temaReal, lessonInfo);
 
-    // Submeter redação
     const submitResult = await submitEssay({
       authToken,
       roomName,
@@ -325,7 +361,6 @@ app.post('/api/redacao', async (req, res) => {
 
 // ─── ROTA: HISTORICO ──────────────────────────────────────────────────────────
 
-// Histórico em memória (por sessão/authToken - simplificado)
 const historico = new Map();
 
 app.post('/api/historico/salvar', (req, res) => {
@@ -336,7 +371,6 @@ app.post('/api/historico/salvar', (req, res) => {
   if (!historico.has(key)) historico.set(key, []);
   historico.get(key).unshift({ ...tarefa, timestamp: new Date().toISOString() });
 
-  // Manter só os últimos 100
   const list = historico.get(key);
   if (list.length > 100) list.length = 100;
 
@@ -354,7 +388,7 @@ app.post('/api/historico', (req, res) => {
 
 // ─── LÓGICA DE IA ─────────────────────────────────────────────────────────────
 
-async function generateAnswers(lessonInfo, useAI = true) {
+async function generateAnswers(lessonInfo, useAI = false) {
   const questions = lessonInfo.questions || lessonInfo.items || [];
   if (!questions.length) return [];
 
@@ -365,7 +399,6 @@ async function generateAnswers(lessonInfo, useAI = true) {
     const qText = q.description || q.text || q.title || '';
 
     if (!useAI || !alternatives.length) {
-      // Sem IA: escolher a de maior score ou a primeira
       const best = alternatives.reduce((a, b) =>
         (b.score || 0) > (a.score || 0) ? b : a, alternatives[0] || {});
       answers.push({
@@ -376,8 +409,8 @@ async function generateAnswers(lessonInfo, useAI = true) {
       continue;
     }
 
-    // Com IA: pedir ao Groq
     try {
+      const { default: Groq } = await import('groq-sdk');
       const groq = new Groq({ apiKey: GROQ_API_KEY });
       const altsText = alternatives.map((a, i) => `${i + 1}. ${a.description}`).join('\n');
       const prompt = `Você é um estudante do ensino médio brasileiro. Responda a questão abaixo escolhendo a alternativa CORRETA. Responda APENAS com o número da alternativa (ex: 2).
@@ -406,7 +439,6 @@ Resposta (apenas o número):`;
         text: chosen?.description || '',
       });
     } catch {
-      // Fallback: primeira alternativa
       answers.push({
         question_id: q.id,
         alternative_id: alternatives[0]?.id || null,
@@ -419,6 +451,7 @@ Resposta (apenas o número):`;
 }
 
 async function gerarRedacao(tema, lessonInfo) {
+  const { default: Groq } = await import('groq-sdk');
   const groq = new Groq({ apiKey: GROQ_API_KEY });
 
   const minWords = lessonInfo.min_words || 250;
@@ -453,10 +486,8 @@ Escreva APENAS a redação, sem título, sem comentários:`;
 // ─── LÓGICA DE SUBMISSÃO ──────────────────────────────────────────────────────
 
 async function submitTask({ authToken, roomName, lessonId, lessonInfo, answers, answerId, targetScore, timeSpent }) {
-  // Montar body de submissão
   const questions = lessonInfo.questions || lessonInfo.items || [];
 
-  // Construir respostas no formato da API
   const answerData = {};
   for (const a of answers) {
     if (a.question_id && a.alternative_id) {
@@ -464,7 +495,6 @@ async function submitTask({ authToken, roomName, lessonId, lessonInfo, answers, 
     }
   }
 
-  // Endpoint de submissão
   const submitUrl = `${IPTV_BASE}/tms/task/${lessonId}/answer`;
   const body = {
     room_code: roomName,
@@ -473,7 +503,7 @@ async function submitTask({ authToken, roomName, lessonId, lessonInfo, answers, 
     answer_id: answerId || undefined,
   };
 
-  const submitResp = await fetch(submitUrl, {
+  const submitResp = await fetchWithRetry(submitUrl, {
     method: answerId ? 'PUT' : 'POST',
     headers: iptvHeaders(authToken),
     body: JSON.stringify(body),
@@ -499,12 +529,12 @@ async function submitEssay({ authToken, roomName, lessonId, lessonInfo, texto, a
   const submitUrl = `${IPTV_BASE}/tms/task/${lessonId}/answer`;
   const body = {
     room_code: roomName,
-    time_spent: Math.round(300 + Math.random() * 300), // 5-10 min
+    time_spent: Math.round(300 + Math.random() * 300),
     essay_text: texto,
     answer_id: answerId || undefined,
   };
 
-  const submitResp = await fetch(submitUrl, {
+  const submitResp = await fetchWithRetry(submitUrl, {
     method: answerId ? 'PUT' : 'POST',
     headers: iptvHeaders(authToken),
     body: JSON.stringify(body),
@@ -531,4 +561,5 @@ app.get('*', (_, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Ultimato do Futuro rodando na porta ${PORT}`);
+  console.log(`   GROQ_API_KEY: ${GROQ_API_KEY ? 'configurada' : 'NÃO configurada (IA desativada)'}`);
 });
