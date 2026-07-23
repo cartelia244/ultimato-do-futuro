@@ -7,8 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Rota de Healthcheck para o Railway não matar o processo
-app.get('/health', (req, res) => res.send('OK'));
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
 app.post('/api/login', async (req, res) => {
   try {
@@ -17,4 +16,8 @@ app.post('/api/login', async (req, res) => {
     res.status(401).json({ error: 'Falha' });
   } catch (e) { res.status(500).json({ error: 'Erro' }); }
 });
-app.listen(process.env.PORT || 3000);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('Server is UP on port', PORT);
+});
