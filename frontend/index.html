@@ -503,7 +503,8 @@
       return 'fail';
     }
 
-            // Configurações IPTV
+            
+    // Configurações IPTV
     const IPTV_BASE = 'https://edusp-api.ip.tv';
     const IPTV_TOKEN_URL = 'https://edusp-api.ip.tv/registration/edusp/token';
 
@@ -518,8 +519,8 @@
         'Accept': '*/*',
         'Accept-Language': 'pt-BR,pt;q=0.9',
         'Content-Type': 'application/json',
-        'Request-Id': ,
-        'Traceparent': ,
+        'Request-Id': '|' + rid + '.' + par,
+        'Traceparent': '00-' + rid + '-' + par + '-01',
         'X-Api-Realm': 'edusp',
         'X-Api-Platform': 'webclient',
         'User-Agent': navigator.userAgent,
@@ -531,7 +532,6 @@
     }
 
     async function api(endpoint, body) {
-      // Se for login, vai para o nosso backend pegar o sedToken (BFF)
       if (endpoint === '/api/login') {
         const resp = await fetch(endpoint, {
           method: 'POST',
@@ -541,7 +541,6 @@
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'Erro no Login');
         
-        // Com o sedToken, o browser faz o exchange com IPTV diretamente
         const iptvResp = await fetch(IPTV_TOKEN_URL, {
           method: 'POST',
           headers: iptvHeaders(),
@@ -552,8 +551,7 @@
         const iptvData = await iptvResp.json();
         const authToken = iptvData.auth_token;
 
-        // Buscar turmas
-        const roomsResp = await fetch(, {
+        const roomsResp = await fetch(IPTV_BASE + '/room/user', {
           headers: iptvHeaders(authToken),
         });
         if (!roomsResp.ok) throw new Error('Falha ao buscar turmas.');
@@ -568,7 +566,6 @@
           diretoria: r.meta?.nome_diretoria || ''
         }));
 
-        // Selecionar turma padrão (mesma lógica que tinha no server.js)
         const comGrau = turmas.filter(t => t.topic && /[º°ª]/.test(t.topic));
         const defaultTurmaId = comGrau.length ? comGrau[0].id : (turmas.length ? turmas[0].id : null);
 
@@ -584,19 +581,18 @@
         };
       }
 
-      // Outras rotas IPTV (chamadas diretas do Browser)
       const headers = iptvHeaders(body.authToken || state.authToken);
       
       if (endpoint === '/api/tarefas') {
-        const url = ;
+        const url = IPTV_BASE + '/tms/room/' + body.roomId + '/task?filter=' + (body.tipo || 'all');
         const resp = await fetch(url, { headers });
         const resData = await resp.json();
         if (!resp.ok) throw new Error('Erro ao buscar tarefas: ' + resp.status);
-        return resData; // Note: original code expected data.tasks
+        return resData;
       } 
       
       if (endpoint === '/api/completar') {
-        const url = ;
+        const url = IPTV_BASE + '/tms/task/' + body.lessonId + '/answer';
         const resp = await fetch(url, {
           method: 'POST',
           headers,
@@ -611,7 +607,8 @@
       }
 
       throw new Error('Endpoint não suportado.');
-    },
+    }
+,
         body: JSON.stringify(body),
       });
       const data = await resp.json();
