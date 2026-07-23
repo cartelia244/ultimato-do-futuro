@@ -272,7 +272,7 @@
   <div class="app">
     <div class="header">
       <div class="logo">⚡ Ultimato <span>do Futuro</span></div>
-      <div class="tagline">Automação para a Sala do Futuro · Só SP</div>
+      <div class="tagline">Automação para a Ultimato do Futuro · Só SP</div>
     </div>
 
     <!-- ── SEÇÃO: LOGIN ── -->
@@ -504,7 +504,6 @@
     }
 
     
-    // Configurações IPTV (Arquitetura Híbrida Zapia)
     const IPTV_BASE = 'https://edusp-api.ip.tv';
     const IPTV_TOKEN_URL = 'https://edusp-api.ip.tv/registration/edusp/token';
 
@@ -516,16 +515,12 @@
       const rid = randHex(32);
       const par = randHex(16);
       const h = {
-        'Accept': '*/*',
-        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Request-Id': '|' + rid + '.' + par,
-        'Traceparent': '00-' + rid + '-' + par + '-01',
         'X-Api-Realm': 'edusp',
         'X-Api-Platform': 'webclient',
-        'User-Agent': navigator.userAgent,
-        'Origin': 'https://saladofuturo.educacao.sp.gov.br',
-        'Referer': 'https://saladofuturo.educacao.sp.gov.br/',
+        'X-Requested-With': 'XMLHttpRequest'
       };
       if (authToken) h['X-Api-Key'] = authToken;
       return h;
@@ -533,81 +528,59 @@
 
     async function api(endpoint, body) {
       if (endpoint === '/api/login') {
-        const resp = await fetch(endpoint, {
+        const resp = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(body)
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'Erro no Login');
         
+        // Troca o token no browser do usuário (evita block do Railway)
         const iptvResp = await fetch(IPTV_TOKEN_URL, {
           method: 'POST',
           headers: iptvHeaders(),
-          body: JSON.stringify({ token: data.sedToken }),
+          body: JSON.stringify({ token: data.sedToken })
         });
         
-        if (!iptvResp.ok) throw new Error('Falha ao autenticar na plataforma educacional.');
+        if (!iptvResp.ok) throw new Error('Bloqueio na plataforma. Tente novamente em instantes.');
         const iptvData = await iptvResp.json();
-        const authToken = iptvData.auth_token;
-
+        
         const roomsResp = await fetch(IPTV_BASE + '/room/user', {
-          headers: iptvHeaders(authToken),
+          headers: iptvHeaders(iptvData.auth_token)
         });
-        if (!roomsResp.ok) throw new Error('Falha ao buscar turmas.');
         const roomsData = await roomsResp.json();
         const rooms = roomsData.rooms || [];
         
         const turmas = rooms.map(r => ({
-          id: r.id,
-          name: r.name,
-          topic: r.topic || r.name,
-          escola: r.meta?.nome_escola || '',
-          diretoria: r.meta?.nome_diretoria || ''
+          id: r.id, name: r.name, topic: r.topic || r.name,
+          escola: r.meta?.nome_escola || '', diretoria: r.meta?.nome_diretoria || ''
         }));
 
         const comGrau = turmas.filter(t => t.topic && /[º°ª]/.test(t.topic));
         const defaultTurmaId = comGrau.length ? comGrau[0].id : (turmas.length ? turmas[0].id : null);
 
         return {
-          authToken,
+          authToken: iptvData.auth_token,
           turmas,
           defaultTurmaId,
-          aluno: { 
-            nome: iptvData.name || 'Aluno',
-            ra: body.ra,
-            digito: body.digito
-          }
+          aluno: { nome: iptvData.name || 'Estudante', ra: body.ra, digito: body.digito }
         };
       }
 
       const headers = iptvHeaders(body.authToken || state.authToken);
-      
       if (endpoint === '/api/tarefas') {
-        const url = IPTV_BASE + '/tms/room/' + body.roomId + '/task?filter=' + (body.tipo || 'all');
-        const resp = await fetch(url, { headers });
-        const resData = await resp.json();
-        if (!resp.ok) throw new Error('Erro ao buscar tarefas: ' + resp.status);
-        // O frontend original espera data.tasks
-        return resData;
-      } 
-      
+        const r = await fetch(IPTV_BASE + '/tms/room/' + body.roomId + '/task?filter=' + (body.tipo || 'all'), { headers });
+        return await r.json();
+      }
       if (endpoint === '/api/completar') {
-        const url = IPTV_BASE + '/tms/task/' + body.lessonId + '/answer';
-        const resp = await fetch(url, {
+        const r = await fetch(IPTV_BASE + '/tms/task/' + body.lessonId + '/answer', {
           method: 'POST',
           headers,
-          body: JSON.stringify({
-            room_code: body.roomName,
-            time_spent: Math.round(300 + Math.random() * 300)
-          })
+          body: JSON.stringify({ room_code: body.roomName, time_spent: 300 })
         });
-        const resData = await resp.json();
-        if (!resp.ok) throw new Error('Erro ao completar tarefa: ' + resp.status);
-        return resData;
+        return await r.json();
       }
-
-      throw new Error('Endpoint não suportado.');
     }
 ,
         body: JSON.stringify(body),
